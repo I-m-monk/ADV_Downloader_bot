@@ -1,0 +1,5 @@
+flask
+requests
+beautifulsoup4
+python-telegram-bot[webhooks]==20.6
+gunicorn
