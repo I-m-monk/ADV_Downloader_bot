@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Fixed event loop issue for webhook
+- Fixed async webhook handling for python-telegram-bot v20+
+- No "loop" or "no running event loop" errors
 """
 
 import os
@@ -176,23 +177,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot in background ---
-async def start_bot():
-    await application.initialize()
-    await application.start()
-    logger.info("Bot application started.")
-
-loop = asyncio.get_event_loop()
-loop.create_task(start_bot())
-
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
-def webhook_handler():
+async def webhook_handler():
     logger.info("Webhook hit received from Telegram")
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
+        await application.process_update(update)
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
@@ -202,6 +194,12 @@ def webhook_handler():
 def healthz():
     return Response('ok', status=200)
 
+async def start_bot():
+    await application.initialize()
+    await application.start()
+    logger.info("Bot application started in webhook mode.")
+
 if __name__ == '__main__':
+    asyncio.run(start_bot())
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
