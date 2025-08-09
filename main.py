@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Webhook processing fixed with asyncio.run_coroutine_threadsafe
+- Fixed for python-telegram-bot v20+
 """
 
 import os
@@ -176,7 +176,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot ---
+# --- Start bot in webhook mode ---
 async def start_bot():
     await application.initialize()
     await application.start()
@@ -191,10 +191,7 @@ def webhook_handler():
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        asyncio.run_coroutine_threadsafe(
-            application.process_update(update),
-            application.loop
-        )
+        asyncio.create_task(application.process_update(update))
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
