@@ -1,15 +1,19 @@
+# Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# system deps for building/parsing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Env vars
-ENV BOT_TOKEN=8063685071:AAFER9Rg-IIqqqcF-ejLV5H2OJHfN_Lj0WI
-ENV WEBHOOK_URL=https://adv-downloader-bot.onrender.com/webhook
+ENV PORT=10000
 
-# Run app with Gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:10000", "main:app"]
+# Gunicorn + Flask wsgi app (main:app)
+CMD ["gunicorn", "-b", "0.0.0.0:10000", "main:app", "--workers", "1", "--threads", "2", "--timeout", "120"]
