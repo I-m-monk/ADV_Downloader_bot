@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["gunicorn", "main:app", "-b", "0.0.0.0:10000", "-k", "gthread"]
+CMD ["gunicorn", "-b", "0.0.0.0:10000", "main:app", "--worker-class", "gthread", "--threads", "4"]
