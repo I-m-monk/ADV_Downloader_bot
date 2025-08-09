@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Telegram Video Extractor Bot (Webhook for Render)
-- Proper webhook mode fix
-"""
-
 import os
 import re
 import logging
@@ -26,6 +20,7 @@ logger = logging.getLogger("main")
 
 application = Application.builder().token(TOKEN).build()
 bot = Bot(token=TOKEN)
+bot_ready = False  # Bot init flag
 
 # --- Helpers ---
 URL_RE = re.compile(r'(https?://[^\s]+)')
@@ -44,10 +39,9 @@ def extract_video_from_html(session, url, html_text):
     soup = BeautifulSoup(html_text, 'html.parser')
 
     video = soup.find('video')
+    if video and video.get('src'):
+        return requests.compat.urljoin(url, video.get('src'))
     if video:
-        src = video.get('src')
-        if src:
-            return requests.compat.urljoin(url, src)
         source = video.find('source')
         if source and source.get('src'):
             return requests.compat.urljoin(url, source.get('src'))
@@ -55,23 +49,6 @@ def extract_video_from_html(session, url, html_text):
     og = soup.find('meta', property='og:video')
     if og and og.get('content'):
         return requests.compat.urljoin(url, og.get('content'))
-
-    for script in soup.find_all('script', type='application/ld+json'):
-        try:
-            import json
-            data = json.loads(script.string or '{}')
-            if isinstance(data, dict):
-                for key in ('contentUrl', 'url', 'embedUrl'):
-                    if data.get(key):
-                        return requests.compat.urljoin(url, data.get(key))
-            elif isinstance(data, list):
-                for entry in data:
-                    if isinstance(entry, dict):
-                        for key in ('contentUrl', 'url', 'embedUrl'):
-                            if entry.get(key):
-                                return requests.compat.urljoin(url, entry.get(key))
-        except Exception:
-            pass
 
     patterns = [
         r'https?://[^\s"\']+\.mp4(?:\?[^\s"\']*)?',
@@ -87,7 +64,6 @@ def extract_video_from_html(session, url, html_text):
 def extract_video_url(session, url):
     logger.info('Extracting video for %s', url)
     final = get_final_url(session, url)
-    logger.info('Final resolved url: %s', final)
 
     if re.search(r'\.(mp4|m3u8|webm|ogg)(?:$|\?)', final, re.IGNORECASE):
         return final
@@ -96,22 +72,21 @@ def extract_video_url(session, url):
         r = session.get(final, timeout=15)
         r.raise_for_status()
         html = r.text
-    except Exception as e:
-        logger.warning('Failed to fetch page: %s', e)
+    except Exception:
         return None
 
     return extract_video_from_html(session, final, html)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi — send me a video page URL. I'll try to extract and send the video.")
+    await update.message.reply_text("Hi — send me a video page URL, I'll try to get the direct link.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ''
-    urls = find_urls(text)
+    urls = find_urls(update.message.text or '')
     if not urls:
         await update.message.reply_text("Please send a valid URL.")
         return
+
     session = requests.Session()
     for url in urls:
         await update.message.reply_text(f"Processing: {url}")
@@ -119,51 +94,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not vid_url:
             await update.message.reply_text("Could not extract a direct video URL.")
             continue
+        await update.message.reply_text(f"Direct link:\n{vid_url}")
 
-        try:
-            h = session.head(vid_url, allow_redirects=True, timeout=10)
-            size = int(h.headers.get('Content-Length', 0))
-            ctype = h.headers.get('Content-Type', 'application/octet-stream')
-        except Exception:
-            size = 0
-            ctype = 'application/octet-stream'
-
-        MAX_BYTES = 50 * 1024 * 1024
-        if size and size > MAX_BYTES:
-            await update.message.reply_text(
-                f"Video too large ({size/(1024*1024):.1f} MB). Direct URL:\n{vid_url}"
-            )
-            continue
-
-        try:
-            resp = session.get(vid_url, stream=True, timeout=30)
-            resp.raise_for_status()
-            bio = BytesIO()
-            for chunk in resp.iter_content(chunk_size=256*1024):
-                if not chunk:
-                    break
-                bio.write(chunk)
-                if bio.tell() > 100 * 1024 * 1024:
-                    break
-            bio.seek(0)
-            if ctype.startswith('video'):
-                await context.bot.send_video(chat_id=update.effective_chat.id, video=bio, filename='video.mp4')
-            else:
-                await context.bot.send_document(chat_id=update.effective_chat.id, document=bio, filename='file.bin')
-        except Exception as e:
-            await update.message.reply_text("Error while downloading/sending the video.\nDirect URL:\n" + vid_url)
-
-# Register handlers
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot in webhook mode ---
-@app.before_first_request
-def init_bot():
-    loop = asyncio.get_event_loop()
-    loop.create_task(application.initialize())
-    loop.create_task(application.start())
+# --- Init Bot ---
+async def init_bot_once():
+    global bot_ready
+    if not bot_ready:
+        await application.initialize()
+        await application.start()
+        bot_ready = True
+        logger.info("Bot initialized and started.")
 
+@app.before_request
+def ensure_bot_started():
+    if not bot_ready:
+        asyncio.get_event_loop().create_task(init_bot_once())
+
+# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook_handler():
     try:
@@ -175,7 +125,7 @@ def webhook_handler():
         logger.exception("Failed to handle update: %s", e)
         return Response('Error', status=500)
 
-@app.route('/healthz', methods=['GET'])
+@app.route('/healthz')
 def healthz():
     return Response('ok', status=200)
 
