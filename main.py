@@ -116,3 +116,88 @@ def extract_video_url(session, url):
             return found
         m = re.search(r'data-src=["\'](https?://[^"\']+)["\']', html)
         if m:
+            return m.group(1)
+
+    return extract_video_from_html(session, final, html)
+
+# --- Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Handler triggered for /start")
+    await update.message.reply_text("Hi — send me a video page URL (pornxp.me or ahcdn.com). I'll try to extract and send the video.")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Handler triggered for normal message")
+    text = update.message.text or ''
+    urls = find_urls(text)
+    if not urls:
+        await update.message.reply_text("Koi URL bhejo pehle — I need a link to extract the video from.")
+        return
+    session = requests.Session()
+    for url in urls:
+        await update.message.reply_text(f"Processing: {url}")
+        vid_url = extract_video_url(session, url)
+        if not vid_url:
+            await update.message.reply_text("Sorry, couldn't extract a direct video URL from that page.")
+            continue
+
+        try:
+            h = session.head(vid_url, allow_redirects=True, timeout=10)
+            size = int(h.headers.get('Content-Length', 0))
+            ctype = h.headers.get('Content-Type', 'application/octet-stream')
+        except Exception:
+            size = 0
+            ctype = 'application/octet-stream'
+
+        MAX_BYTES = 50 * 1024 * 1024
+        if size and size > MAX_BYTES:
+            await update.message.reply_text(
+                f"Video seems large ({size/(1024*1024):.1f} MB). Direct URL:\n{vid_url}"
+            )
+            continue
+
+        try:
+            resp = session.get(vid_url, stream=True, timeout=30)
+            resp.raise_for_status()
+            bio = BytesIO()
+            for chunk in resp.iter_content(chunk_size=256*1024):
+                if not chunk:
+                    break
+                bio.write(chunk)
+                if bio.tell() > 100 * 1024 * 1024:
+                    break
+            bio.seek(0)
+            if ctype.startswith('video'):
+                await context.bot.send_video(chat_id=update.effective_chat.id, video=bio, filename='video.mp4')
+            else:
+                await context.bot.send_document(chat_id=update.effective_chat.id, document=bio, filename='file.bin')
+        except Exception as e:
+            logger.exception('Failed to download/send video: %s', e)
+            await update.message.reply_text("Error while downloading or sending the video. Direct URL:\n" + vid_url)
+
+# Register handlers
+application.add_handler(CommandHandler('start', start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Properly init Application (await)
+asyncio.run(application.initialize())
+
+# --- Webhook ---
+@app.route('/webhook', methods=['POST'])
+def webhook_handler():
+    logger.info("Webhook hit received from Telegram")
+    try:
+        update_json = request.get_json(force=True)
+        update = Update.de_json(update_json, application.bot)
+        application.update_queue.put_nowait(update)
+        return Response('OK', status=200)
+    except Exception as e:
+        logger.exception("Failed to handle update: %s", e)
+        return Response('Error', status=500)
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    return Response('ok', status=200)
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))  # Render uses 10000
+    app.run(host='0.0.0.0', port=port)
