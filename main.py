@@ -1,37 +1,46 @@
-import os
-import asyncio
-from flask import Flask, request, Response
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler
+import asyncio
+import os
 
-TOKEN = "8063685071:AAFER9Rg-IIqqqcF-ejLV5H2OJHfN_Lj0WI"
-WEBHOOK_URL = "https://adv-downloader-bot.onrender.com/webhook"
+# Bot Token & Webhook URL
+TOKEN = os.getenv("BOT_TOKEN", "8063685071:AAFER9Rg-IIqqqcF-ejLV5H2OJHfN_Lj0WI")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://adv-downloader-bot.onrender.com/webhook")
 
 app = Flask(__name__)
+
+# Create Telegram Application
 application = Application.builder().token(TOKEN).build()
 
-# /start command
+# Commands
 async def start(update: Update, context):
-    await update.message.reply_text("Hello! Bot is working fine ✅")
-
-# Any text message
-async def echo(update: Update, context):
-    await update.message.reply_text(f"You said: {update.message.text}")
+    await update.message.reply_text("Hello! ✅ Bot is running.")
 
 application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+# Initialize and start bot before requests
+async def init_bot():
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook set to: {WEBHOOK_URL}")
+
+# Run bot initialization before first request
+asyncio.get_event_loop().run_until_complete(init_bot())
+
+@app.route("/")
+def home():
+    return "Bot is live!"
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.run(application.process_update(update))
-    return Response("OK", status=200)
-
-@app.route("/")
-def index():
-    return "Bot is running!"
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        asyncio.create_task(application.process_update(update))
+    except Exception as e:
+        print("❌ Error in webhook:", e)
+    return "ok"
 
 if __name__ == "__main__":
-    # Set webhook at start
-    asyncio.run(application.bot.set_webhook(WEBHOOK_URL))
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=10000)
