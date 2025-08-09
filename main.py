@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-Fully async + webhook compatible (PTB v20+)
+- Safe Flask sync route + async Telegram processing
 """
 
 import os
 import re
 import logging
+import asyncio
 from io import BytesIO
 from flask import Flask, request, Response
 import requests
@@ -120,9 +121,7 @@ def extract_video_url(session, url):
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Handler triggered for /start")
-    await update.message.reply_text(
-        "Hi — send me a video page URL (pornxp.me or ahcdn.com). I'll try to extract and send the video."
-    )
+    await update.message.reply_text("Hi — send me a video page URL (pornxp.me or ahcdn.com). I'll try to extract and send the video.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Handler triggered for normal message")
@@ -173,26 +172,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception('Failed to download/send video: %s', e)
             await update.message.reply_text("Error while downloading or sending the video. Direct URL:\n" + vid_url)
 
-# Register handlers
+# --- Register handlers ---
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Webhook ---
-@app.before_first_request
-def init_bot():
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.create_task(application.initialize())
-    loop.create_task(application.start())
+# --- Start bot ---
+async def start_bot():
+    await application.initialize()
+    await application.start()
     logger.info("Bot application started.")
 
+asyncio.get_event_loop().create_task(start_bot())
+
+# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
-async def webhook_handler():
+def webhook_handler():
     logger.info("Webhook hit received from Telegram")
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        await application.process_update(update)
+        asyncio.run(application.process_update(update))
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
@@ -203,5 +202,5 @@ def healthz():
     return Response('ok', status=200)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))  # Render uses port 10000
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
