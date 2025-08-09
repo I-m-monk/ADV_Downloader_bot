@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
-"""A ready-to-deploy Telegram bot (webhook) for Render.
-Features:
-- Webhook endpoint using Flask to receive Telegram updates
-- Uses python-telegram-bot for handler management
-- Robust video extraction logic using requests + BeautifulSoup + regex (handles pornxp.me and ahcdn.com better)
-- Streams download and sends small/medium files; falls back to returning direct URL on large files
-- Detailed logging for debugging on Render
+"""
+Telegram Video Extractor Bot (Webhook for Render)
+Fixes:
+- Awaited application.initialize() properly
+- Added extra logging for /webhook hits
+- Better error handling
 """
 
 import os
 import re
 import logging
-import tempfile
+import asyncio
 from io import BytesIO
 from flask import Flask, request, Response
 import requests
@@ -20,20 +19,20 @@ from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- Configuration ---
-TOKEN = os.environ.get('TG_BOT_TOKEN')  # Set this on Render as an env var
+TOKEN = os.environ.get('TG_BOT_TOKEN')  # Set in Render Env Vars
 if not TOKEN:
     raise RuntimeError('TG_BOT_TOKEN environment variable not set.')
 
-# Flask app for webhook
+# Flask app
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Build telegram Application (handlers only, we'll feed updates manually from Flask)
+# Telegram application
 application = Application.builder().token(TOKEN).build()
 bot = Bot(token=TOKEN)
 
-# --- Helpers: extraction logic ---
+# --- URL extraction helpers ---
 URL_RE = re.compile(r'(https?://[^\s]+)')
 
 def find_urls(text):
@@ -47,10 +46,8 @@ def get_final_url(session, url):
         return url
 
 def extract_video_from_html(session, url, html_text):
-    """Try multiple patterns to find a direct video URL."""
     soup = BeautifulSoup(html_text, 'html.parser')
 
-    # 1) <video> tag or <source>
     video = soup.find('video')
     if video:
         src = video.get('src')
@@ -60,12 +57,10 @@ def extract_video_from_html(session, url, html_text):
         if source and source.get('src'):
             return requests.compat.urljoin(url, source.get('src'))
 
-    # 2) Open Graph tags
     og = soup.find('meta', property='og:video')
     if og and og.get('content'):
         return requests.compat.urljoin(url, og.get('content'))
 
-    # 3) JSON-LD
     for script in soup.find_all('script', type='application/ld+json'):
         try:
             import json
@@ -83,7 +78,6 @@ def extract_video_from_html(session, url, html_text):
         except Exception:
             pass
 
-    # 4) raw regex search for direct mp4/m3u8 links
     patterns = [
         r'https?://[^\s"\']+\.mp4(?:\?[^\s"\']*)?',
         r'https?://[^\s"\']+\.m3u8(?:\?[^\s"\']*)?',
@@ -96,16 +90,13 @@ def extract_video_from_html(session, url, html_text):
     return None
 
 def extract_video_url(session, url):
-    """Top-level function that tries several strategies and includes site-specific tweaks."""
     logger.info('Extracting video for %s', url)
     final = get_final_url(session, url)
     logger.info('Final resolved url: %s', final)
 
-    # quick direct file check
     if re.search(r'\.(mp4|m3u8|webm|ogg)(?:$|\?)', final, re.IGNORECASE):
         return final
 
-    # Fetch page
     try:
         r = session.get(final, timeout=15)
         r.raise_for_status()
@@ -114,25 +105,22 @@ def extract_video_url(session, url):
         logger.warning('Failed to fetch page: %s', e)
         return None
 
-    # Site-specific: pornxp.me
     if 'pornxp.me' in final:
         found = extract_video_from_html(session, final, html)
         if found:
             return found
-        m = re.search(r'[\"\']file[\"\']\s*:\s*[\"\'](https?://[^\"\']+)[\"\']', html)
+        m = re.search(r'["\']file["\']\s*:\s*["\'](https?://[^"\']+)["\']', html)
         if m:
             return m.group(1)
 
-    # Site-specific: ahcdn.com
     if 'ahcdn.com' in final or 'ahcdn' in final:
         found = extract_video_from_html(session, final, html)
         if found:
             return found
-        m = re.search(r'data-src=[\"\'](https?://[^\"\']+)[\"\']', html)
+        m = re.search(r'data-src=["\'](https?://[^"\']+)["\']', html)
         if m:
             return m.group(1)
 
-    # Generic fallback
     return extract_video_from_html(session, final, html)
 
 # --- Telegram handlers ---
@@ -153,7 +141,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Sorry, couldn't extract a direct video URL from that page.")
             continue
 
-        # Try HEAD to get size/content-type
         try:
             h = session.head(vid_url, allow_redirects=True, timeout=10)
             size = int(h.headers.get('Content-Length', 0))
@@ -162,15 +149,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             size = 0
             ctype = 'application/octet-stream'
 
-        # If file is large (>= 50 MB) do not stream through the bot — return URL
-        MAX_BYTES = 50 * 1024 * 1024  # 50 MB threshold
+        MAX_BYTES = 50 * 1024 * 1024
         if size and size > MAX_BYTES:
             await update.message.reply_text(
                 f"Video seems large ({size/(1024*1024):.1f} MB). I will send the direct URL instead:\n{vid_url}"
             )
             continue
 
-        # Otherwise download and send
         try:
             resp = session.get(vid_url, stream=True, timeout=30)
             resp.raise_for_status()
@@ -194,12 +179,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Initialize application (this sets up internal queues & job queue)
-application.initialize()
+# Properly initialize Application
+asyncio.run(application.initialize())
 
-# --- Webhook endpoint for Telegram (Render will use this) ---
+# --- Webhook endpoint ---
 @app.route('/webhook', methods=['POST'])
 def webhook_handler():
+    logger.info("Webhook hit received from Telegram")
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
@@ -209,7 +195,6 @@ def webhook_handler():
         logger.exception("Failed to handle update: %s", e)
         return Response('Error', status=500)
 
-# Health check for Render
 @app.route('/healthz', methods=['GET'])
 def healthz():
     return Response('ok', status=200)
