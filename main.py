@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-Fixes:
-- Awaited application.initialize() properly
-- Added extra logging for /webhook hits
-- Better error handling
+- Async init fixed (awaited properly)
+- Extra debug logs for /start and message handlers
 """
 
 import os
@@ -18,21 +16,19 @@ from bs4 import BeautifulSoup
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Configuration ---
-TOKEN = os.environ.get('TG_BOT_TOKEN')  # Set in Render Env Vars
+# --- Config ---
+TOKEN = os.environ.get('TG_BOT_TOKEN')
 if not TOKEN:
-    raise RuntimeError('TG_BOT_TOKEN environment variable not set.')
+    raise RuntimeError("TG_BOT_TOKEN environment variable not set.")
 
-# Flask app
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
-# Telegram application
 application = Application.builder().token(TOKEN).build()
 bot = Bot(token=TOKEN)
 
-# --- URL extraction helpers ---
+# --- Helpers ---
 URL_RE = re.compile(r'(https?://[^\s]+)')
 
 def find_urls(text):
@@ -123,11 +119,13 @@ def extract_video_url(session, url):
 
     return extract_video_from_html(session, final, html)
 
-# --- Telegram handlers ---
+# --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Handler triggered for /start")
     await update.message.reply_text("Hi — send me a video page URL (pornxp.me or ahcdn.com). I'll try to extract and send the video.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Handler triggered for normal message")
     text = update.message.text or ''
     urls = find_urls(text)
     if not urls:
@@ -152,7 +150,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         MAX_BYTES = 50 * 1024 * 1024
         if size and size > MAX_BYTES:
             await update.message.reply_text(
-                f"Video seems large ({size/(1024*1024):.1f} MB). I will send the direct URL instead:\n{vid_url}"
+                f"Video seems large ({size/(1024*1024):.1f} MB). Direct URL:\n{vid_url}"
             )
             continue
 
@@ -173,16 +171,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(chat_id=update.effective_chat.id, document=bio, filename='file.bin')
         except Exception as e:
             logger.exception('Failed to download/send video: %s', e)
-            await update.message.reply_text("Error while downloading or sending the video. Sending direct URL instead:\n" + vid_url)
+            await update.message.reply_text("Error while downloading or sending the video. Direct URL:\n" + vid_url)
 
 # Register handlers
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Properly initialize Application
+# Properly init Application (await)
 asyncio.run(application.initialize())
 
-# --- Webhook endpoint ---
+# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook_handler():
     logger.info("Webhook hit received from Telegram")
@@ -200,4 +198,5 @@ def healthz():
     return Response('ok', status=200)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    port = int(os.environ.get('PORT', 10000))  # Render uses 10000
+    app.run(host='0.0.0.0', port=port)
