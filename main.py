@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Proper webhook mode start fix
+- Fixed: process_update directly triggers handlers from webhook
 """
 
 import os
@@ -42,7 +42,6 @@ def get_final_url(session, url):
 
 def extract_video_from_html(session, url, html_text):
     soup = BeautifulSoup(html_text, 'html.parser')
-
     video = soup.find('video')
     if video:
         src = video.get('src')
@@ -176,7 +175,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot in webhook mode ---
+# --- Start bot ---
 async def start_bot():
     await application.initialize()
     await application.start()
@@ -191,7 +190,7 @@ def webhook_handler():
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        application.update_queue.put_nowait(update)
+        application.create_task(application.process_update(update))
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
