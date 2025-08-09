@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Fixed for python-telegram-bot v20+
+- Fixed event loop issue for webhook
 """
 
 import os
@@ -176,13 +176,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot in webhook mode ---
+# --- Start bot in background ---
 async def start_bot():
     await application.initialize()
     await application.start()
     logger.info("Bot application started.")
 
-asyncio.get_event_loop().create_task(start_bot())
+loop = asyncio.get_event_loop()
+loop.create_task(start_bot())
 
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
@@ -191,7 +192,7 @@ def webhook_handler():
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        asyncio.create_task(application.process_update(update))
+        asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
