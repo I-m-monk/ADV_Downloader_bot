@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Safe Flask sync route + async Telegram processing
+- Fixed: Proper webhook mode start + initialize before processing updates
 """
 
 import os
@@ -100,19 +100,11 @@ def extract_video_url(session, url):
         logger.warning('Failed to fetch page: %s', e)
         return None
 
-    if 'pornxp.me' in final:
+    if 'pornxp.me' in final or 'ahcdn.com' in final:
         found = extract_video_from_html(session, final, html)
         if found:
             return found
         m = re.search(r'["\']file["\']\s*:\s*["\'](https?://[^"\']+)["\']', html)
-        if m:
-            return m.group(1)
-
-    if 'ahcdn.com' in final or 'ahcdn' in final:
-        found = extract_video_from_html(session, final, html)
-        if found:
-            return found
-        m = re.search(r'data-src=["\'](https?://[^"\']+)["\']', html)
         if m:
             return m.group(1)
 
@@ -172,11 +164,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.exception('Failed to download/send video: %s', e)
             await update.message.reply_text("Error while downloading or sending the video. Direct URL:\n" + vid_url)
 
-# --- Register handlers ---
+# Register handlers
 application.add_handler(CommandHandler('start', start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# --- Start bot ---
+# --- Start bot in webhook mode ---
 async def start_bot():
     await application.initialize()
     await application.start()
@@ -191,7 +183,7 @@ def webhook_handler():
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        asyncio.run(application.process_update(update))
+        asyncio.get_event_loop().create_task(application.process_update(update))
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
