@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Telegram Video Extractor Bot (Webhook for Render)
-- Fixed: process_update directly triggers handlers from webhook
+- Webhook processing fixed with asyncio.run_coroutine_threadsafe
 """
 
 import os
@@ -42,6 +42,7 @@ def get_final_url(session, url):
 
 def extract_video_from_html(session, url, html_text):
     soup = BeautifulSoup(html_text, 'html.parser')
+
     video = soup.find('video')
     if video:
         src = video.get('src')
@@ -190,7 +191,10 @@ def webhook_handler():
     try:
         update_json = request.get_json(force=True)
         update = Update.de_json(update_json, application.bot)
-        application.create_task(application.process_update(update))
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            application.loop
+        )
         return Response('OK', status=200)
     except Exception as e:
         logger.exception("Failed to handle update: %s", e)
